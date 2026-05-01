@@ -2,15 +2,16 @@
 // The Microsoft Corporation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using Flow.Launcher.Plugin;
+using Flow.Plugin.VSCodeWorkspaces.VSCodeHelper;
+using JetBrains.Annotations;
+using Microsoft.Data.Sqlite;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Flow.Plugin.VSCodeWorkspaces.VSCodeHelper;
-using JetBrains.Annotations;
-using Microsoft.Data.Sqlite;
 
 namespace Flow.Plugin.VSCodeWorkspaces.WorkspacesHelper
 {
@@ -101,36 +102,57 @@ namespace Flow.Plugin.VSCodeWorkspaces.WorkspacesHelper
                     }
 
                     // for vscode v1.64.0 or later
-                    using var connection = new SqliteConnection(
-                        $"Data Source={vscodeInstance.AppData}/User/globalStorage/state.vscdb;mode=readonly;cache=shared;");
-                    connection.Open();
-                    var command = connection.CreateCommand();
-                    command.CommandText = "SELECT value FROM ItemTable where key = 'history.recentlyOpenedPathsList'";
-                    var result = command.ExecuteScalar();
-                    if (result != null)
+                    var vscode_storage_db = Path.Combine(vscodeInstance.AppData, "User/globalStorage/state.vscdb");
+
+                    // for vscode v1.118.0 or later
+                    var vscode_shared_storage_db = vscodeInstance.SharedStorageDbPath;
+
+                    var storageDbPaths = new[] { vscode_storage_db, vscode_shared_storage_db }
+                        .Where(filePath => !string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+                        .Distinct(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var storageDbPath in storageDbPaths)
                     {
-                        using var historyDoc = JsonDocument.Parse(result.ToString()!);
-                        var root = historyDoc.RootElement;
-                        if (!root.TryGetProperty("entries", out var entries))
-                            continue;
-                        foreach (var entry in entries.EnumerateArray())
-                        {
-                            if (entry.TryGetProperty("folderUri", out var folderUri) &&
-                                ParseFolderEntry(folderUri, vscodeInstance, entry) is { } folderWorkspace)
-                            {
-                                results.Add(folderWorkspace);
-                            }
-                            else if (entry.TryGetProperty("workspace", out var workspaceInfo) &&
-                                     ParseWorkspaceEntry(workspaceInfo, vscodeInstance, entry) is { } workspace)
-                            {
-                                results.Add(workspace);
-                            }
-                        }
+                        var storageDbResults = GetWorkspacesInVscdb(vscodeInstance, storageDbPath);
+                        results.AddRange(storageDbResults);
                     }
                 }
 
                 return results;
             }
+        }
+
+        private List<VsCodeWorkspace> GetWorkspacesInVscdb(VSCodeInstance vscodeInstance, string filePath)
+        {
+            var dbFileResults = new List<VsCodeWorkspace>();
+            using var connection = new SqliteConnection(
+                        $"Data Source={filePath};mode=readonly;cache=shared;");
+            connection.Open();
+            var command = connection.CreateCommand();
+            command.CommandText = "SELECT value FROM ItemTable where key = 'history.recentlyOpenedPathsList'";
+            var result = command.ExecuteScalar();
+            if (result != null)
+            {
+                using var historyDoc = JsonDocument.Parse(result.ToString()!);
+                var root = historyDoc.RootElement;
+                if (!root.TryGetProperty("entries", out var entries))
+                    return dbFileResults;
+                foreach (var entry in entries.EnumerateArray())
+                {
+                    if (entry.TryGetProperty("folderUri", out var folderUri) &&
+                        ParseFolderEntry(folderUri, vscodeInstance, entry) is { } folderWorkspace)
+                    {
+                        dbFileResults.Add(folderWorkspace);
+                    }
+                    else if (entry.TryGetProperty("workspace", out var workspaceInfo) &&
+                             ParseWorkspaceEntry(workspaceInfo, vscodeInstance, entry) is { } workspace)
+                    {
+                        dbFileResults.Add(workspace);
+                    }
+                }
+            }
+
+            return dbFileResults;
         }
 
         [CanBeNull]
