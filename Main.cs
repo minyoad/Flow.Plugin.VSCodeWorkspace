@@ -111,10 +111,27 @@ namespace Flow.Plugin.VSCodeWorkspaces
             if (query.ActionKeyword == string.Empty ||
                 (query.ActionKeyword != string.Empty && query.Search != string.Empty))
             {
+                var searchTerms = query.Search.ToLowerInvariant()
+                    .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 results = results.Where(r =>
                 {
-                    r.Score = Context.API.FuzzySearch(query.Search, r.Title).Score;
-                    return r.Score > 0;
+                    var title = r.Title.ToLowerInvariant();
+                    var subTitle = r.SubTitle?.ToLowerInvariant() ?? string.Empty;
+                    // 检查所有搜索词是否都在标题或子标题中出现（任意位置）
+                    bool allTermsMatch = searchTerms.All(term => 
+                        title.Contains(term) || subTitle.Contains(term));
+                    if (allTermsMatch)
+                    {
+                        // 如果包含所有搜索词，计算模糊搜索分数（优先用标题计算）
+                        var fuzzyScore = Context.API.FuzzySearch(query.Search, r.Title).Score;
+                        // 如果模糊搜索分数为0但确实包含所有搜索词，给一个基础分数
+                        r.Score = fuzzyScore > 0 ? fuzzyScore : 50;
+                        return true;
+                    }
+                    // 再尝试模糊搜索，处理拼写错误等情况
+                    var score = Context.API.FuzzySearch(query.Search, r.Title).Score;
+                    r.Score = score;
+                    return score > 0;
                 }).ToList();
             }
 
